@@ -1,0 +1,656 @@
+---
+title: "MAESTRIA EN DATA MINING - TP AID"
+author: "MARIA JOSE FERREYRA VILLANUEVA"
+date: "Ago 2020"
+output: html_document
+---
+***
+
+##### ASIGNACION DE BASES:
+**SUPERVISADA** <- base accidentes, el 90% de los datos
+
+***
+
+##### ANALISIS SUPERVISADO: ACCIDENTES
+
+Referencias de los atributos:
+
+  * grave:	calidad del accidente 1(grave) 0(leve)	
+  * edad.conductor: en años
+  * antiguedad:	del vehículo en años
+  * potencia:	potencia del vehículo
+  
+***  
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# llamadas a las librerias que vamos a usar en el proceso
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(nortest)
+library(ggbiplot)
+library(mvnormtest)
+library(DescTools)
+library(biotools)
+library(rpanel)
+library(MASS)
+library(caret)
+library(e1071)
+library(randomForest)
+library(corrplot)
+library(boot)
+library(car) 
+library(scatterplot3d)
+library(lattice)
+library(grid)
+library(DMwR)
+library(rrcov)
+library(ResourceSelection)
+
+```
+
+<br>
+Seleccionamos los datos con los que vamos a trabajar utilizando la semilla pedida:
+<br>
+```{r}
+# levantamos el dataset
+datos <- read.csv("accidentes.csv", sep=";", stringsAsFactors = FALSE)
+
+# tomamos el 90% de los datos segun la semilla asignada
+dni<-23297670
+n<-round(0.9* nrow(datos)) 
+set.seed(dni)
+cuales<-sample(1:nrow(datos), size=n, replace=FALSE)
+
+
+df_accidentes<-datos[cuales,]
+rm(datos)
+```
+<br>
+
+##### ANALISIS EXPLORATORIO
+
+<br>
+Dimensiones y características del dataset:
+<br>
+
+```{r }
+dim(df_accidentes)
+summary(df_accidentes)
+str(df_accidentes)
+```
+
+  * El atributo *vehiculo* es un identificador de registro. No se tomará en cuenta para el análisis.
+  * El atributo *grave* es nuestro atributo de clase.
+  * El resto de los atributos son numéricos y se utilizarán para la predicción de la clase.
+  * Contamos con un dataset de 36 observaciones
+
+  
+```{r}
+# sacamos el atributo vehiculo
+df_accidentes<-df_accidentes[,-c(1)]
+
+```
+
+<br>  
+Bucamos outliers univariados:
+<br>
+
+```{r boxplot}
+# observamos los boxplot de las variables
+par(mfcol = c(1,3))
+
+for (col in 1:3){
+  boxplot(df_accidentes[,col],
+          xlab = names(df_accidentes)[col],
+          ylab = "valor")
+  grid()
+}
+
+```
+<br>
+En la variable ***potencia*** se observa un outlier.
+<br>
+<br>
+```{r }
+# hay un outlier en el atributo potencia, el resto de los valores
+# del atributo (entre 60 y 130). Decido dejarlo afuera del analisis
+
+df_accidentes <-df_accidentes[df_accidentes$potencia>=60,]
+```
+
+<br>
+Buscamos outliers multivariados. 
+<br>
+
+```{r}
+# Aplicamos la distancia de mahalanobis y MCD (Minimum Covariance Determinant) 
+outliers <- df_accidentes[,1:3]
+
+# metodo de MCD
+cov.mcd=cov.rob( outliers, method="mcd" , nsamp="exact" ) 
+outliers$mahalanobis <-round( mahalanobis(outliers, cov.mcd$center, cov.mcd$cov, inverted = F),4)
+
+# Ordenamos de forma decreciente, según el score de Mahalanobis
+outliers <- outliers[order(outliers$mahalanobis,decreasing = TRUE),]
+
+# Descartamos los outliers según un umbral de 7
+umbral<-7
+
+outliers$outlier <- (outliers$mahalanobis>umbral)
+
+outliers$color <- ifelse(outliers$outlier, "red", "black")
+
+scatterplot3d(outliers$potencia,
+              outliers$edad.conductor,
+              outliers$antigüedad, color = outliers$color,
+              main="Outliers multivariados",
+              xlab = "Potencia",
+              ylab = "Edad conductor",
+              zlab = "Antigüedad",
+              pch = 16)
+
+
+```
+<br>
+Se encontraron 6 outliers multivariados.
+<br>
+<br>
+
+##### ANALISIS UNIVARIADO
+
+
+<br>
+Relaciones entre las variables:
+Graficamos el dispersograma, distinguiendo la variable objetivo.
+<br>
+```{r }
+
+pairs(df_accidentes[1:3], main="Dispersograma",
+      lower.panel = NULL,
+      pch=21, bg=c("red", "green")[as.factor(df_accidentes$grave)],
+      oma=c(4, 4, 6, 12))
+par(xpd=TRUE)
+legend(x = 0.05, y = 0.4, cex = 1.2,unique(df_accidentes$grave), bty='n',
+       fill=c("red",  "green"), title="Grave")
+par(xpd = NA)
+
+```
+<br>
+Matriz de correlacion de Pearson.
+<br>
+```{r}
+cor(df_accidentes[,1:3])
+```
+<br>
+No se observa multicolinealidad entre las variables
+<br>
+Histograma de las variables, identificando la clase objetivo.
+```{r}
+
+p1<- ggplot(data = df_accidentes,aes(x = antigüedad, fill = as.factor(grave))) + 
+  geom_histogram(position = "identity", alpha = 0.5) + labs(fill = "Grave") +
+  scale_fill_manual(values=c("red", "green"))
+
+p2 <- ggplot(data = df_accidentes, aes(x = edad.conductor, fill = as.factor(grave))) + 
+  geom_histogram(position = "identity", alpha = 0.5) + labs(fill = "Grave") +
+  scale_fill_manual(values=c("red", "green")) 
+
+p3 <- ggplot(data = df_accidentes, aes(x = potencia, fill = as.factor(grave))) + 
+  geom_histogram(position = "identity", alpha = 0.5) + labs(fill = "Grave") +
+  scale_fill_manual(values=c("red", "green"))
+
+grid.arrange(p1, p2, p3)
+
+```
+
+<br>
+No se observan variables que sean buenas para discriminar las clases
+
+<br>
+Analizamos normalidad de distribuciones por clase.
+Observamos los graficos de cuantiles y hacemos test de Shapiro y Anderson
+
+```{r}
+# Representación de cuantiles normales de cada variable para cada clase 
+pvalSh = matrix(nrow=2, ncol=5)
+pvalAd = matrix(nrow=2, ncol=5)
+par(mfcol = c(2,3))
+for (col in 1:3){
+  pvalSh[1,4] = paste("Shapiro", "grave 0")
+  pvalSh[2,4] = paste("Shapiro", "grave 1")
+  pvalAd[1,4] = paste("Anderson", "grave 0")
+  pvalAd[2,4] = paste("Anderson", "grave 1")
+ 
+  for (grav in seq.int(0,1)){
+    # p valor de shapiro
+    pval = shapiro.test(df_accidentes[df_accidentes$grave==grav,col])$p.value
+    pval2 = ad.test(df_accidentes[df_accidentes$grave==grav,col])$p.value
+   qqnorm(df_accidentes[df_accidentes$grave==grav,col],main = paste("grave",grav,names(df_accidentes[col]))
+          ,col=grav+2, pch = 19)
+   qqline(df_accidentes[df_accidentes$grave==grav,col],col="black") 
+    pvalSh[grav+1,col] = round(pval,4)
+    pvalAd[grav+1,col] = round(pval2,4)
+    pvalSh[grav+1,5] = grav
+    pvalAd[grav+1,5] = grav
+    pvalSh[grav+1,4] = "Shapiro"
+    pvalAd[grav+1,4] = "Anderson"
+    
+    grid()
+  }
+  
+}
+# tabla de datos/tests / p-valor
+df_pvalues <- rbind(as.data.frame(pvalSh),as.data.frame(pvalAd))
+colnames(df_pvalues)[1:3]<-names(df_accidentes[1:3])
+colnames(df_pvalues)[4]<-"Test"
+colnames(df_pvalues)[5]<-"Grave"
+df_pvalues
+```
+<br>
+Exploramos los histogramas por clase:
+<br>
+```{r}
+#histogramas de las variables y su normalidad
+par(mfcol = c(2,3))
+
+for (col in 1:3)
+{
+  for (grav in seq.int(0,1))
+    {
+      hist(df_accidentes[df_accidentes$grave==grav,col],proba = T,
+           xlab = names(df_accidentes)[col],10,main=paste("Grave",grav))
+      x0 <- seq(min(df_accidentes[, col]), max(df_accidentes[, col]), le = 50) 
+      lines(x0, dnorm(x0, mean(df_accidentes[,col]), sd(df_accidentes[,col])), col = "red", lwd = 2) 
+ 
+    }
+}
+
+```
+<br>
+
+##### ANALISIS MULTIVARIADO
+
+<br>
+Comparamos las medias de los grupos con el test de Hotelling y graficamos de perfiles
+<br>
+```{r}
+# El test de hotelling compara las medias multivariadas entre los dos grupos
+
+HotellingsT2Test(as.matrix(df_accidentes[,1:3]) ~ grave, data =df_accidentes)
+
+```
+<br>
+El p-valor del test nos dice que tenemos evidencia para rechazar la hipotesis de que las medias de ambos grupos 
+son iguales, por lo tanto vale la pena identificar los grupos con algun algoritmo clasificador...
+<br>
+Grafico de perfiles
+<br>
+```{r}
+#grafico de comparacion de vector de medias
+
+media.grave0=apply(df_accidentes[df_accidentes$grave==0,1:3],2,mean)
+media.grave1=apply(df_accidentes[df_accidentes$grave==1,1:3],2,mean)
+
+ms=as.matrix(media.grave0)
+mv=as.matrix(media.grave1)
+medias=rbind(ms,mv)
+
+datos=cbind(rep(c(1,2,3),2),medias,c(rep("0",3),rep("1",3)))
+colnames(datos)=c("Variables","Medias","Grave")
+data=data.frame(datos)
+
+data[,1:2]=as.numeric(unlist(data[,1:2]))
+
+ggplot(data,aes(x=Variables,y=Medias,colour=Grave))+ geom_line()+
+  scale_x_discrete(limit=c("1","2","3"), labels=c("antiguedad","edad conductor","potencia"))
+
+```
+<br>
+Se puede observar que los perfiles no son paralelos y las lineas de los grupos se cruzan.
+
+<br>
+
+##### ANALISIS DE SUPUESTOS
+
+<br>
+Testeamos supuestos de:
+
+  * Normalidad multivariada
+  * Homocedasticidad multivariada
+
+```{r}
+# testeamos normalidad multivariante
+
+mshapiro.test(t(df_accidentes[df_accidentes$grave==0,1:3]))
+mshapiro.test(t(df_accidentes[df_accidentes$grave==1,1:3]))
+
+```
+<br>
+Se rechaza la hipotesis de normalidad para ambos grupos
+<br>
+<br>
+Testeamos homocedasticidad mutivariante con el test M de box
+<br>
+
+```{r}
+boxM(data =  df_accidentes[,1:3], grouping =  df_accidentes[,4])
+
+```
+<br>
+Se rechaza la hipotesis nula con un p-valor menor a 0.05
+<br>
+Ante la sensibilidad del test M de box a la falta de normalidad, se realiza la alternativa robusta con la prueba de Levene multivarada para probar homocedasticidad.
+<br>
+```{r}
+# alternativa robusta para probar la homocedasticidad 
+
+df_tot <- df_accidentes
+df_tot$grave<- as.factor(df_tot$grave)
+
+leveneTest (antigüedad + edad.conductor + potencia ~ grave,data= df_tot ) 
+
+```
+No tenemos evidencia para rechazar la hipotesis nula que indica homocedasticidad.
+<br>
+<br>
+Analizamos la matriz de correlación por grupos.
+```{r}
+
+cor.0 <-cor(df_accidentes[df_accidentes$grave==0,1:3])
+cor.1 <- cor(df_accidentes[df_accidentes$grave==1,1:3])
+
+
+par(mfcol = c(1,2))
+corrplot(cor.0, type="upper", main="Clase 0",tl.cex = 0.8,cex.main=1,mar=c(0,0,5,0), tl.offset = 1)
+corrplot(cor.1, type="upper", main="Clase 1",tl.cex = 0.8,cex.main=1,mar=c(0,0,5,0), tl.offset = 1)
+
+```
+<br>
+Se observan diferencias entre los coeficientes para los mismos pares de variables de los distintos grupos
+tambien podemos ver que la antiguedad y potencia se relacionan positivamente en la clase 0 (leve)
+pero de forma negativa, para la clase 1 (grave).
+
+<br>
+<br>
+
+##### ALGORITMOS SUPERVISADOS
+
+<br>
+Aplicaremos:
+
+  * Analisis Discriminante Lineal
+  * Analisis Discriminante Cuadrático Robusto
+  * Regresión Logística
+  * Maquina de Soporte Vectorial
+  * RandomForest
+
+  
+<br>
+Balance de las clases:
+```{r }
+ 
+table(df_accidentes$grave)/nrow(df_accidentes)
+
+```
+
+<br>
+Dividimos los conjuntos de entrenamiento y validacion:
+<br>
+  
+```{r}
+# dividimos los grupos de entrenamiento y validacion
+# partimos en train y val, en 70 y 30 respectivamente 
+set.seed(4321)
+train_index <- createDataPartition(as.factor(df_accidentes$grave), p = .7, 
+                                  list = FALSE, 
+                                  times = 1)
+
+val_index <- setdiff(1:nrow(df_accidentes), train_index)
+
+datos_train <- df_accidentes[train_index,]
+datos_val <- df_accidentes[val_index,]
+
+datos_todos <- df_accidentes
+
+# inicializo los dataframes para guardar los resultados
+res.acc<- data.frame("Validation" = c(0,0,0,0,0), "LOO" = c(0,0,0,0,0))
+rownames(res.acc)<-c('LDA','QDAR','LG','SVM','RF')
+
+res.rec <- res.acc
+```
+
+<br>
+Aplicamos Analisis Lineal Discriminante (LDA)
+<br>
+En cada algoritmo, usamos las tecnicas de entrenamiento y validacion y leave-one-out (loo)
+<br>
+```{r}
+# algoritmo LDA con los dos metodos de particion
+
+# train y val
+modelo_lda <- lda(formula = grave ~ antigüedad + edad.conductor + potencia,
+                 data = datos_train)
+
+modelo_lda
+predic_val_lda <- predict(object = modelo_lda, newdata = datos_val[1:3], method = "predictive") 
+
+cm_2<-confusionMatrix(predic_val_lda$class,as.factor(datos_val$grave), positive = '1')
+cm_2$table
+
+res.acc["LDA","Validation"]<-cm_2$overall[1]
+res.rec["LDA","Validation"]<-cm_2$byClass[6]
+
+# loo
+modelo_lda <- lda(formula = grave ~ antigüedad + edad.conductor + potencia,
+                 data = datos_todos,CV=TRUE)
+
+cm_3<-confusionMatrix(modelo_lda$class,as.factor(datos_todos$grave), positive = '1')
+
+cm_3$table
+
+res.acc["LDA","LOO"]<-cm_3$overall[1]
+res.rec["LDA","LOO"]<-cm_3$byClass[6]
+
+
+```
+Arriba se muestran las matrices de confusion de ambos modelos
+
+<br>
+Aplicamos Analisis Cuadrático Discriminante Robusto (QDAR)
+<br>
+
+```{r}
+
+# train y val
+modelo_qda <- QdaCov(as.factor(grave) ~ ., data= datos_train)
+predic_val_qda <- predict(modelo_qda, newdata = datos_val[1:3])@classification
+modelo_qda
+
+cm_2<-confusionMatrix(predic_val_qda,as.factor(datos_val$grave), positive = '1')
+cm_2$table
+
+res.acc["QDAR","Validation"]<-cm_2$overall[1]
+res.rec["QDAR","Validation"]<-cm_2$byClass[6]
+
+#LOO
+modelo_qda <- qda(as.factor(grave) ~ 
+                  antigüedad + edad.conductor + potencia , data = datos_todos,CV=TRUE)
+
+cm_3<-confusionMatrix(modelo_qda$class,as.factor(datos_todos$grave), positive = '1')
+cm_3$table
+
+res.acc["QDAR","LOO"]<-cm_3$overall[1]
+res.rec["QDAR","LOO"]<-cm_3$byClass[6]
+
+```
+
+Arriba se muestran las matrices de confusion de ambos modelos
+
+<br>
+Aplicamos Regresion logística (LG)
+<br>
+
+```{r}
+
+# train y val
+modelo_lg <- glm(as.factor(grave) ~ 
+                  antigüedad + edad.conductor + potencia , data = datos_train,family=binomial("logit"))
+
+modelo_lga<-modelo_lg
+summary(modelo_lg)
+
+predic_val_lg<-predict(modelo_lg,newdata = datos_val[1:3],type = "response")
+clase_lg_val  = ifelse(predic_val_lg>0.5,1,0) 
+
+cm_2<-confusionMatrix(as.factor(clase_lg_val),as.factor(datos_val$grave), positive = '1')
+cm_2$table
+
+res.acc["LG","Validation"]<-cm_2$overall[1]
+res.rec["LG","Validation"]<-cm_2$byClass[6]
+
+
+# LOO
+glm.LOO=vector()
+
+for(i in 1:nrow(datos_todos)){
+  datos_train2=datos_todos[-i,]
+  modelo_lg <- glm(as.factor(grave) ~ 
+                  antigüedad + edad.conductor + potencia , data = datos_train2,family=binomial)
+  glm.LOO[i]=predict(modelo_lg,datos_todos[i,1:3],type="response")
+}
+
+clase_lg  = ifelse(glm.LOO>0.5,1,0) 
+cm_3<-confusionMatrix(as.factor(clase_lg),as.factor(datos_todos$grave), positive = '1')
+
+cm_3$table
+
+res.acc["LG","LOO"]<-cm_3$overall[1]
+res.rec["LG","LOO"]<-cm_3$byClass[6]
+
+```
+Arriba se muestran los coeficientes del modelo de regresion y las matrices de confusion de ambos modelos
+
+<br>
+Test Hosmer - Lemeshow para el algoritmo de regresion logistica.
+Queremos verificar si el modelo se ajusta correctamente a los datos.
+<br>
+```{r}
+
+predic_val_lg2<-predict(modelo_lga,newdata = datos_train[1:3],type = "response")
+
+hoslem.test(predic_val_lg2, fitted(modelo_lga))
+
+```
+
+El p valor es 1, por lo tanto no tenemos evidencia para rechazar la hipotesis nula que sostiene que el modelo se ajusta a los datos
+
+<br>
+Aplicamos Maquina de Soporte Vectorial (SVM)
+<br>
+```{r}
+
+#train y validation
+
+modelo_svm<-svm(as.factor(grave)~antigüedad + edad.conductor + potencia,
+               data=datos_train,method="C-classification",kernel="radial",cost=10,gamma=.1, scale=TRUE)
+
+predic_val_svm<-predict(modelo_svm,newdata = datos_val[1:3])
+
+summary(modelo_svm)
+
+cm_2<-confusionMatrix(as.factor(predic_val_svm),as.factor(datos_val$grave), positive = '1')
+cm_2$table
+
+res.acc["SVM","Validation"]<-cm_2$overall[1]
+res.rec["SVM","Validation"]<-cm_2$byClass[6]
+
+
+# LOO
+svm.LOO=vector()
+
+
+for(i in 1:nrow(datos_todos)){
+  datos_train2=datos_todos[-i,]
+  
+  modelo_svm <- svm(as.factor(grave)~antigüedad + edad.conductor + potencia,
+               data=datos_train2,method="C-classification",kernel="radial",cost=10,gamma=.1)
+
+  svm.LOO[i]<-as.character(predict(modelo_svm,newdata =datos_todos[i,1:3]))
+  
+}
+
+cm_3<-confusionMatrix(as.factor(svm.LOO),as.factor(datos_todos$grave), positive = '1')
+
+cm_3$table
+
+res.acc["SVM","LOO"]<-cm_3$overall[1]
+res.rec["SVM","LOO"]<-cm_3$byClass[6]
+
+
+```
+Arriba se muestran las matrices de confusion de ambos modelos
+<br>
+<br>
+Aplicamos Random Forest (RF)
+<br>
+
+```{r}
+
+# train y val
+
+modelo_rf<-randomForest(as.factor(grave)~antigüedad + edad.conductor + potencia, data=datos_train, 
+                       na.action = na.omit,replace=TRUE, ntree=700, maxnodes=10)
+
+predic_val_rf<-predict(modelo_rf,newdata = datos_val[1:3])
+cm_2<-confusionMatrix(as.factor(predic_val_rf),as.factor(datos_val$grave), positive = '1')
+cm_2$table
+
+res.acc["RF","Validation"]<-cm_2$overall[1]
+res.rec["RF","Validation"]<-cm_2$byClass[6]
+
+
+# LOO
+rf.LOO=vector()
+
+for(i in 1:nrow(datos_todos)){
+  datos_train2=datos_todos[-i,]
+  modelo_rf<-randomForest(as.factor(grave)~antigüedad + edad.conductor + potencia, data=datos_train2, 
+                       na.action = na.omit,replace=TRUE, ntree=700)
+
+  rf.LOO[i]<-as.character(predict(modelo_rf,newdata = datos_todos[i,1:3]))
+
+}
+
+cm_3<-confusionMatrix(as.factor(rf.LOO),as.factor(datos_todos$grave), positive = '1')
+cm_3$table
+
+res.acc["RF","LOO"]<-cm_3$overall[1]
+res.rec["RF","LOO"]<-cm_3$byClass[6]
+
+```
+Arriba se muestran las matrices de confusion de ambos modelos
+<br>
+<br>
+
+##### COMPARAMOS PERFORMANCE DE TODOS LOS MODELOS
+
+<br>
+Analizamos la performance de los algoritmos con las metricas de Accuracy y Recall.
+<br>
+```{r}
+# comparacion de accuracy de todos los modelos
+round(res.acc,2)
+
+# comparacion de recall de todos los modelos
+round(res.rec,2)
+```
+
+<br>
+<h6>
+Maria Jose Ferreyra V.
+<br>
+Agosto 2020
+</h6>
+

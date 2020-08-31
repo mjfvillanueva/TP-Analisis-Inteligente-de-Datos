@@ -1,0 +1,291 @@
+---
+title: "MAESTRIA EN DATA MINING - TP AID"
+author: "MARIA JOSE FERREYRA VILLANUEVA"
+date: "Ago 2020"
+output: html_document
+---
+
+***
+
+##### ASIGNACION DE BASES:
+**NO SUPERVISADA** <- base telecomunicaciones, seleccionar 5 variables cualesquiera.
+
+***
+
+##### ANALISIS NO SUPERVISADO: TELECOMUNICACIONES
+
+
+***
+<br>
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(23297670)
+```
+
+```{r setup2, include=FALSE}
+
+# levantamos las librerias que vamos a utilizar en el analisis
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(cluster)
+library(pracma)
+library(ggbiplot)
+library(pracma)
+library(cluster)
+library(corrplot)
+
+```
+
+
+<br>
+Levantamos el conjunto de datos y vemos su estructura y contenido.
+<br>
+
+```{r }
+# levantamos el dataset
+df_tele <- read.csv("telecomunicaciones.csv", sep=";", stringsAsFactors = FALSE)
+
+dim(df_tele)
+summary(df_tele)
+str(df_tele)
+
+```
+
+<br>
+Seleccion de variables
+<br>
+```{r}
+
+df_tele <- df_tele[,c('permanencia','llamadas_gratuitas_mes','inhalámbrico_mes','n_pers_hogar','edad')]
+
+
+```
+
+<br>
+
+##### ANALISIS EXPLORATORIO
+
+<br>
+Boxplots de las variables elegidas
+
+
+```{r}
+
+par(mfcol = c(2,3))
+
+for (col in 1:ncol(df_tele)){
+  boxplot(df_tele[,col],
+          xlab = names(df_tele)[col],
+          ylab = "valor")
+  grid()
+}
+
+
+```
+
+<br>
+
+Vemos la relacion entre las variables: Correlograma
+<br>
+```{r}
+cor.1<-cor(df_tele[1:5])
+
+corrplot(cor.1,method="number", type="upper",  tl.cex = 0.8)
+```
+<br>
+
+Analisis de componentes principales.
+Grafico y tabla de loadings
+<br>
+```{r}
+datos.pc = prcomp(df_tele[1:5],scale = TRUE)
+
+#cargas
+round(datos.pc$rotation,2) 
+#grafico 
+ggbiplot(datos.pc, obs.scale=1 ,var.scale=1,alpha=0.0) 
+```
+
+
+```{r , include=FALSE}
+# definicion de funciones provistas en las clases practicas para clustering
+
+# funcion de escalamiento con minimos y maximos
+esc01 <- function(x) { (x - min(x)) / (max(x) - min(x))} 
+
+# funcion para calcular metricas que orientan sobre 
+# el numero de clusters a elegir para el problema: silhoutte y SSE
+metrica = function(datA_esc,kmax,f)
+{
+  
+  sil = array()
+  #sil_2 = array()
+  sse = array()
+  
+  datA_dist= dist(datA_esc,method = "euclidean", diag = FALSE, upper = FALSE, p = 2)
+  for ( i in  2:kmax) {
+    if (strcmp(f,"kmeans")==TRUE) {   #centroide: tipico kmeans
+      CL  = kmeans(datA_esc,centers=i,nstart=50,iter.max = kmax)
+      sse[i]  = CL$tot.withinss 
+      CL_sil = silhouette(CL$cluster, datA_dist)
+      sil[i]  = summary(CL_sil)$avg.width
+        }
+    if (strcmp(f,"pam")==TRUE){       #medoide: ojo porque este metodo tarda muchisimo 
+      CL = pam(x=datA_esc, k=i, diss = F, metric = "euclidean")
+      sse[i]  = CL$objective[1] 
+      sil[i]  = CL$silinfo$avg.width
+      }
+  }
+  sse
+  sil
+  return(data.frame(sse,sil))
+}
+```
+
+
+##### ALGORITMO KMEANS NO JERARQUICO
+
+
+<br>
+Graficos de Silhouette y de Suma de Cuadrados Dentro para la seleccion optima de cantidad de clusters
+<br>
+
+```{r}
+
+kmax =10
+
+#escalamiento
+m1   = metrica(scale(df_tele),kmax,"kmeans")  
+
+#graficos de los indicadores de clustering
+par(mfrow=c(2,1))
+plot(2:kmax, m1$sil[2:kmax],col=1,type="b", pch = 19, frame = FALSE, 
+	 xlab="Number of clusters K",
+	 ylab="sil") 
+
+plot(2:kmax, m1$sse[2:kmax],type="b", pch = 19, frame = FALSE, 
+	 xlab="Number of clusters K",
+	 ylab="sse") 
+
+par(mfrow=c(1,1))
+
+```
+Ambos graficos nos indican que la cantidad optima de clusters es 3.
+<br>
+Aplicamos el algoritmo kmeans, para 3 clusters.
+Estandarizamos los datos por el metodo de ***media y desvio estandar***
+<br>
+
+```{r}
+#Realizamos 3 grupos, tal cual sugieren los graficos 
+CL  = kmeans(scale(df_tele),3,nstart=50,iter.max = 10)
+
+df_tele$kmeans = CL$cluster
+
+table(df_tele$kmeans)
+```
+<br>
+Visualizamos los clusters en el biplot
+<br>
+
+```{r}
+# visualizamos los cluster obtenidos en el biplot
+
+ggbiplot(datos.pc, obs.scale=1 ,var.scale=1, alpha=0.5,groups = as.factor(df_tele$kmeans)) +
+      scale_colour_discrete(name="Cluster kmeans") +
+      theme(legend.direction ="horizontal", legend.position = "top")
+```
+
+
+
+##### ALGORITMOS JERARQUICO
+
+<br>
+Comparamos distintos algoritmos.
+Usamos la distancia de ***manhattan***y escalamiento por ***maximos y minimos***
+
+<br>
+```{r}
+#cluster jerárquico
+datos2<-df_tele[,1:5]
+#quito columna "kmeans"
+
+datos2 <-apply(datos2,2,esc01)
+
+# Matriz de distancias de manhattan
+mat_dist <- dist(x = datos2, method = "manhattan") 
+
+# Dendrogramas (según el tipo de segmentación jerárquica aplicada)  
+hc_complete <- hclust(d = mat_dist, method = "complete") 
+hc_average  <- hclust(d = mat_dist, method = "average")
+hc_single   <- hclust(d = mat_dist, method = "single")
+hc_ward     <- hclust(d = mat_dist, method = "ward.D2")
+
+#calculo del coeficiente de correlacion cofenetico
+cor(x = mat_dist, cophenetic(hc_complete))
+cor(x = mat_dist, cophenetic(hc_average))
+cor(x = mat_dist, cophenetic(hc_single))
+cor(x = mat_dist, cophenetic(hc_ward))
+```
+Analizamos los coeficientes de correlacion cofenetica.
+El algoritmo de Average es el que tiene el mayor valor.
+<br>
+Graficamos el dendograma del modelo Average.
+<br>
+
+```{r}
+# Dendograma usando los resultados de la técnica de average
+# la tecnica tiene el mayor coeficiente cofenetico
+plot(hc_average , main="Dendrograma Average ", xlab = "", sub="", ylab = "Distancia Manhattan")
+
+#con 2 grupos podria ser la mejor eleccion
+rect.hclust(hc_average, k=2, border="red")
+grupos<-cutree(hc_average,k=2)
+
+# los cluster quedan muy desbalanceados
+table(grupos)
+
+```
+
+Los cluster estan demasiado desbalanceados. A partir del  análisis grafico, 2 clusters serían la mejor eleccion.
+<br>
+Buscamos otra opción, el algoritmo de Ward, tiene el segundo mejor coeficiente cofenetico.
+<br>
+Graficamos el dendrograma:
+
+```{r}
+# Dendograma usando los resultados de la técnica de ward
+
+plot(hc_ward , main="Dendrograma Ward ", xlab = "", sub="", ylab = "Distancia Manhattan")
+
+# graficamente, se aprecia que 2 clusters sería la mejor eleccion
+rect.hclust(hc_ward, k=2, border="red")
+grupos<-cutree(hc_ward,k=2)
+par(xpd=TRUE)
+# los grupos se ven bastante balanceados
+table(grupos)
+
+
+```
+
+Los cluster se ven mas balanceados y en el dendrograma es mas facil verificar que la cantidad optima de clusters es 2.
+
+<br>
+<br>
+Visualizamos los clusters obtenidos en el biplot
+<br>
+
+```{r}
+#visualizamos con 3 grupos el cluster jerarquico Ward 
+ggbiplot(datos.pc, obs.scale=1 ,var.scale=1, alpha=0.5,groups = as.factor(grupos) )+
+  scale_colour_discrete(name="Cluster Ward") +  
+theme(legend.direction ="horizontal", legend.position = "top")
+```
+
+<br>
+<h6>
+Maria Jose Ferreyra V.
+<br>
+Agosto 2020
+</h6>
